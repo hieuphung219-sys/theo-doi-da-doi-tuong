@@ -45,7 +45,7 @@ if __name__ == "__main__":
     for sequence in sequences:
         print("Running sequence %s" % sequence)
         sequence_dir = os.path.join(args.mot_dir, sequence)
-        detection_file = os.path.join(args.detection_dir, "%s.npy" % sequence)
+        detection_file = os.path.join(sequence_dir, "detections.npy")
         output_file = os.path.join(args.output_dir, "%s.txt" % sequence)
         deep_sort_app.run(
             sequence_dir, detection_file, output_file, args.min_confidence,

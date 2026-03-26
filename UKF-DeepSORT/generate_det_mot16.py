@@ -4,37 +4,26 @@ import glob
 from tqdm import tqdm
 from vehicle_detector import VehicleDetector
 
-def generate_mot_det_file(input_img_dir, output_det_dir):
+def generate_mot_det_file(detector, seq_name, input_img_dir, output_det_dir):
     """
-    Hàm đọc ảnh từ thư mục đầu vào, chạy YOLO và xuất ra file det.txt tại thư mục đầu ra.
-    
-    Args:
-        input_img_dir: Đường dẫn tới thư mục chứa các frame ảnh (VD: 'dataset/KITTI-0000/image_02')
-        output_det_dir: Đường dẫn tới thư mục muốn lưu file det.txt (VD: 'data/mot_format/KITTI-0000/det')
+    Hàm xử lý cho 1 sequence. Nhận mô hình YOLO (detector) đã được load sẵn từ ngoài.
     """
-    # 1. Tự động tạo cây thư mục đầu ra nếu nó chưa tồn tại
     os.makedirs(output_det_dir, exist_ok=True)
     det_file_path = os.path.join(output_det_dir, "det.txt")
     
-    # 2. Lấy danh sách tất cả các ảnh và sắp xếp theo thứ tự bảng chữ cái
     image_paths = glob.glob(os.path.join(input_img_dir, "*.jpg")) + \
                   glob.glob(os.path.join(input_img_dir, "*.png"))
     image_paths.sort()
     
     if len(image_paths) == 0:
-        print(f"Không tìm thấy ảnh nào trong thư mục: {input_img_dir}")
+        print(f"[-] Bỏ qua {seq_name}: Không tìm thấy ảnh trong {input_img_dir}")
         return
 
-    # 3. Khởi tạo module detector (từ file vehicle_detector.py)
-    print("Đang tải mô hình YOLO...")
-    detector = VehicleDetector()
-    
-    # 4. Bắt đầu duyệt qua từng frame và ghi file
-    print(f"Bắt đầu xử lý {len(image_paths)} frame...")
-    print(f"Kết quả sẽ được lưu tại: {det_file_path}")
+    print(f"[*] Đang xử lý {seq_name} ({len(image_paths)} frames)...")
     
     with open(det_file_path, 'w') as f:
-        for frame_id, img_path in enumerate(tqdm(image_paths), start=1):
+        # Dùng tqdm để hiển thị thanh tiến trình cho từng sequence
+        for frame_id, img_path in enumerate(tqdm(image_paths, desc=seq_name, leave=False), start=1):
             frame = cv2.imread(img_path)
             if frame is None:
                 continue
@@ -47,20 +36,38 @@ def generate_mot_det_file(input_img_dir, output_det_dir):
                 x_min, y_min, w, h, conf, cls_id = det
                 line = f"{frame_id},-1,{x_min:.2f},{y_min:.2f},{w:.2f},{h:.2f},{conf:.4f},{int(cls_id)},-1,-1\n"
                 f.write(line)
-                
-    print("Hoàn thành xuất file detection!")
 
 if __name__ == "__main__":
-    # --- BẠN THAY ĐỔI ĐƯỜNG DẪN Ở ĐÂY ---
+    # --- ĐƯỜNG DẪN THƯ MỤC GỐC CHỨA TOÀN BỘ DATASET ---
+    # Giả sử cấu trúc của bạn là: datasets/KITTI-0000, datasets/KITTI-0001,...
+    DATASET_ROOT = "datasets/KITTI_MOT"
     
-    # 1. Đường dẫn đến thư mục chứa ảnh gốc của sequence
-    # (Tùy thuộc vào việc ảnh của bạn đuôi jpg/png nằm ở đâu)
-    INPUT_IMAGE_DIR = "data/mot_format/KITTI-0000/img1" 
+    # 1. Lấy danh sách tất cả các thư mục có chữ "KITTI-" bên trong DATASET_ROOT
+    all_sequences = [d for d in os.listdir(DATASET_ROOT) 
+                     if os.path.isdir(os.path.join(DATASET_ROOT, d)) and d.startswith("KITTI-")]
+    all_sequences.sort()
     
-    # 2. Đường dẫn đích mà bạn muốn lưu file det.txt
-    OUTPUT_DET_DIR = "data/mot_format/KITTI-0000/det"
+    if len(all_sequences) == 0:
+        print(f"Không tìm thấy thư mục KITTI nào trong '{DATASET_ROOT}'. Vui lòng kiểm tra lại đường dẫn!")
+        exit(1)
+        
+    print(f"Tìm thấy {len(all_sequences)} sequences. Đang tải mô hình YOLOv8m...")
     
-    generate_mot_det_file(
-        input_img_dir=INPUT_IMAGE_DIR, 
-        output_det_dir=OUTPUT_DET_DIR
-    )
+    # 2. Khởi tạo YOLO CHỈ MỘT LẦN DUY NHẤT ở đây để tối ưu hiệu năng
+    detector = VehicleDetector(model_path="yolov8m.pt")
+    
+    # 3. Lặp qua từng sequence và xử lý
+    for seq_name in all_sequences:
+        seq_dir = os.path.join(DATASET_ROOT, seq_name)
+        
+        input_img_dir = os.path.join(seq_dir, "img1")
+        output_det_dir = os.path.join(seq_dir, "det")
+        
+        generate_mot_det_file(
+            detector=detector, 
+            seq_name=seq_name,
+            input_img_dir=input_img_dir, 
+            output_det_dir=output_det_dir
+        )
+        
+    print("\n[+] HOÀN THÀNH!")
