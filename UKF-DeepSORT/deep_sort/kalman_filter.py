@@ -21,7 +21,7 @@ chi2inv95 = {
 
 class UnscentedKalmanFilter:
     def __init__(self):
-        ndim = 7
+        ndim = 8
         self._ndim = ndim
         self._no_sigma_points = 2 * ndim + 1
         self._lamda = 3 - (ndim + 2)
@@ -33,13 +33,10 @@ class UnscentedKalmanFilter:
         self.sigma_points = np.zeros((self._no_sigma_points + 4, self._ndim + 2))
 
     def initiate(self, measurement):
-        # 1. Khởi tạo Mean 7 phần tử [x, y, a, h, vx, vy, vh]
         mean_pos = measurement[:4] 
-        mean_vel = np.zeros(3) 
+        mean_vel = np.zeros(4) 
         mean = np.r_[mean_pos, mean_vel] 
 
-        # 2. Khởi tạo độ lệch chuẩn (std) cho 7 phần tử
-        # Chúng ta cần định nghĩa std cho cả 7 thành phần để tạo ma trận 7x7
         std = [
             2 * self._std_weight_position * measurement[3], # x
             2 * self._std_weight_position * measurement[3], # y
@@ -47,53 +44,70 @@ class UnscentedKalmanFilter:
             2 * self._std_weight_position * measurement[3], # h
             10 * self._std_weight_velocity * measurement[3], # vx
             10 * self._std_weight_velocity * measurement[3], # vy
+            1e-2,
             10 * self._std_weight_velocity * measurement[3]  # vh
         ]
-        
-        self.height = measurement[3]
-        # 3. Tạo ma trận hiệp phương sai 7x7 từ bình phương độ lệch chuẩn
         covariance = np.diag(np.square(std))
-        
-        print(f"[KIỂM TRA CUỐI] Mean shape: {mean.shape}, Cov shape: {covariance.shape}")
         return mean, covariance
 
     def generate_sigma_point(self, mean, covariance):
-        # Sửa ndim + 2 thành 9 (vì ndim=7, cộng thêm 2 chiều nhiễu gia tốc)
-        sigma_points = np.zeros((self._no_sigma_points + 4, self._ndim + 2)) 
-        sigma_points[0] = mean
+        n = mean.shape[0]
+        
+        # --- VÁ LỖI POSITIVE DEFINITE ---
+        # 1. Ép ma trận đối xứng để loại bỏ sai số lệch
+        covariance = (covariance + covariance.T) / 2.0
+        # 2. Thêm jitter (1e-4) vào đường chéo để đảm bảo luôn dương
+        covariance += np.eye(n) * 1e-4
+        # --------------------------------
+        
         L = np.linalg.cholesky(covariance)
-        for i in range(0, self._ndim + 2): # Sửa ở đây
-            sigma_points[i + 1] = mean + np.sqrt(self._ndim + 2 + self._lamda) * L[i]
-            sigma_points[i + 1 + self._ndim + 2] = mean - np.sqrt(self._ndim + 2 + self._lamda) * L[i]
+        sigma_points = np.zeros((2 * n + 1, n))
+        sigma_points[0] = mean
+        
+        for i in range(n):
+            sigma_points[i + 1] = mean + np.sqrt(n + self._lamda) * L[:, i]
+            sigma_points[i + 1 + n] = mean - np.sqrt(n + self._lamda) * L[:, i]
+            
         return sigma_points
 
     def augmentation(self, mean, covariance):
-        mean_aug = np.zeros(9) # Sửa 7 -> 9
-        mean_aug[:7] = mean    # Sửa 5 -> 7
-        covariance_aug = np.zeros((9, 9)) # Sửa 7x7 -> 9x9
-        covariance_aug[:7, :7] = covariance # Sửa 5x5 -> 7x7
+        mean_aug = np.zeros(10)
+        mean_aug[:8] = mean
+        covariance_aug = np.zeros((10, 10))
+        covariance_aug[:8, :8] = covariance
         
         # Giữ nguyên phần tính toán std cho acceleration
         std = [
             self._std_weight_acceleration * self.height,
             1e-6
         ]
-        covariance_aug[7:, 7:] = np.diag(np.square(std)) # Sửa index 5 -> 7
+        covariance_aug[8:, 8:] = np.diag(np.square(std))
         return mean_aug, covariance_aug
     
     def predict(self, mean, covariance):
         mean, covariance = self.augmentation(mean, covariance)
         sigma_points = self.generate_sigma_point(mean, covariance)
         predicted_sigma_points = np.zeros((self._no_sigma_points + 4, self._ndim))
+        
         for i in range(self._no_sigma_points + 4):
             x = sigma_points[i]
-            # x[0]=x, x[1]=y, x[2]=a, x[3]=h, x[4]=vx, x[5]=vy, x[6]=vh, x[7]=acc_noise_1, x[8]=acc_noise_2
+            # --- ÁNH XẠ INDEX MỚI (10 chiều = 8 trạng thái + 2 nhiễu) ---
+            # x[0]=x, x[1]=y, x[2]=a, x[3]=h
+            # x[4]=vx, x[5]=vy, x[6]=va, x[7]=vh
+            # x[8]=acc_noise_x, x[9]=acc_noise_y
+            
             dt = 1.0 # Giả định delta t = 1 frame
-            x[0] += x[4] * dt + 0.5 * x[7] * dt**2 # x = x + vx*t + 0.5*acc*t^2
-            x[1] += x[5] * dt + 0.5 * x[8] * dt**2 # y = y + vy*t + 0.5*acc*t^2
-            x[3] += x[6] * dt                      # h = h + vh*t
-            # x[2] (tỷ lệ aspect ratio) giữ nguyên
-            predicted_sigma_points[i] = x[:7] # Chỉ lấy 7 phần tử trạng thái gốc
+            
+            # Cập nhật tọa độ x, y với nhiễu gia tốc mới ở x[8], x[9]
+            x[0] += x[4] * dt + 0.5 * x[8] * dt**2 
+            x[1] += x[5] * dt + 0.5 * x[9] * dt**2 
+            
+            # Cập nhật tỷ lệ khung hình (a) và chiều cao (h)
+            x[2] += x[6] * dt # a = a + va*t (Hoạt động bình thường)
+            x[3] += x[7] * dt # h = h + vh*t
+            
+            # CHÚ Ý: Phải lấy 8 phần tử trạng thái gốc thay vì 7 như trước
+            predicted_sigma_points[i] = x[:8] 
 
         weights = np.zeros(self._no_sigma_points + 4)
         weights[0] = self._lamda / (self._ndim + 2 + self._lamda)
@@ -103,6 +117,7 @@ class UnscentedKalmanFilter:
         weights = np.diag(weights)
         covariance = np.linalg.multi_dot(
             ((mean.T - predicted_sigma_points).T, weights, (mean.T - predicted_sigma_points)))
+        
         return mean, covariance, predicted_sigma_points
 
     def project(self, mean, covariance, height, predicted_sigma_points):
@@ -135,6 +150,7 @@ class UnscentedKalmanFilter:
         return projected_mean, projected_covariance + innovation_cov, correlation
 
     def update(self, mean, covariance, measurement, predicted_sigma_points):
+        print(f"[DEBUG UKF] Mean shape: {mean.shape} | Covariance shape: {covariance.shape}")
         projected_mean, projected_covariance, correlation = self.project(mean, covariance,
                                                                          measurement[3], predicted_sigma_points)
         kalman_gain = np.dot(correlation, np.linalg.inv(projected_covariance))
